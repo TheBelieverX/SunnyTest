@@ -1,0 +1,7 @@
+{
+  "name": "Povești Magice (Magic Stories)",
+  "description": "A magical companion that listens to your stories in Romanian and brings them to life with real-time illustrations for your child.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
