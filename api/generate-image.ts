@@ -19,8 +19,12 @@ function sanitizeBible(raw: any): StoryBible {
   const characters = Array.isArray(raw?.characters) ? raw.characters.slice(0, 20) : [];
   return {
     characters: characters
-      .map((c: any) => ({ name: clip(c?.name, 80), description: clip(c?.description, 400) }))
-      .filter((c: any) => c.name),
+      .map((c: any) => {
+        const description = clip(c?.description, 400);
+        const name = clip(c?.name, 80).trim() || description.split(/[:,.]/)[0].slice(0, 60).trim();
+        return { name, description };
+      })
+      .filter((c: any) => c.name && c.description),
     setting: clip(raw?.setting, 400),
     style: clip(raw?.style, 300) || DEFAULT_STYLE,
     summary: clip(raw?.summary, 1200),
@@ -51,9 +55,10 @@ ${JSON.stringify(bible)}
 NEW NARRATION:
 """${text}"""
 
-Return ONLY JSON: {"characters":[{"name":"","description":""}],"setting":"","style":"","summary":"","scene":""}
+Return ONLY JSON: {"characters":[{"name":"short label, e.g. Unicorns or Luna the fox","description":"visual description"}],"setting":"","style":"","summary":"","scene":""}
 
 Rules:
+- Every character MUST have a non-empty "name" and "description".
 - Keep every existing character exactly as established: same species/type (e.g. unicorns stay unicorns, never humans), same number of individuals, same colors, clothing and features. Change a character only if the narration explicitly says it changes (transformation, new outfit, etc.).
 - Add new characters introduced by the narration. A group is ONE entry that states the count (e.g. "Three unicorns: ...").
 - Resolve pronouns and references ("they", "he", "the creatures") to the established characters.
