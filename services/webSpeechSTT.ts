@@ -24,18 +24,26 @@ export class WebSpeechSTTManager {
   public onTranscription: ((text: string) => void) | null = null;
   public onError: ((error: Error) => void) | null = null;
 
-  constructor() {
+  constructor(lang: string = 'ro-RO') {
     if (!SpeechRecognition) {
       throw new Error("Web Speech API not supported in this browser");
     }
 
     this.recognition = new SpeechRecognition();
+    this.lang = lang;
     this.setupRecognition();
   }
 
+  private lang: string;
+
+  // Only call while stopped; the browser ignores language changes on a running recognizer.
+  setLanguage(lang: string) {
+    this.lang = lang;
+    this.recognition.lang = lang;
+  }
+
   private setupRecognition() {
-    // Set to Romanian language
-    this.recognition.lang = 'ro-RO';
+    this.recognition.lang = this.lang;
     this.recognition.continuous = true;
     this.recognition.interimResults = true;
     this.recognition.maxAlternatives = 1;

@@ -19,7 +19,7 @@ export class BufferManager {
   private readonly WORD_THRESHOLD = 70;
   private generationQueue: GenerationRequest[] = [];
   private activeGenerations = new Set<string>();
-  private maxParallelGenerations = 2; // Allow 2 parallel generations
+  private maxParallelGenerations = 1; // Sequential: each image uses the previous one as reference
   
   // Session context tracking for consistency
   private sessionHistory: string[] = [];

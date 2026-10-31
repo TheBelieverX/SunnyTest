@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Mic, MicOff, BookOpen, Clock, Terminal, X, Download } from 'lucide-react';
 import { WebSpeechSTTManager } from './services/webSpeechSTT';
 import { BufferManager, GenerationRequest } from './services/bufferManager';
-import { generateIllustration } from './services/geminiService';
+import { generateImageViaApi, downscaleImage, StoryBible, useUsage, track, QuotaExceededError } from './services/api';
+import { supabase } from './services/supabase';
 import { Illustration, SessionStatus } from './types';
 import { MagicButton } from './components/MagicButton';
 import { BookViewer } from './components/BookViewer';
@@ -15,6 +16,18 @@ export default function App() {
   const [transcripts, setTranscripts] = useState<string[]>([]);
   const [currentWordCount, setCurrentWordCount] = useState(0);
   const [activeGenerations, setActiveGenerations] = useState<string[]>([]);
+  const usage = useUsage();
+  const storyBibleRef = useRef<StoryBible | null>(null);
+  const lastImageRef = useRef<string | null>(null);
+  const [language, setLanguage] = useState<'ro-RO' | 'en-US'>(
+    () => (localStorage.getItem('storyLang') === 'en-US' ? 'en-US' : 'ro-RO')
+  );
+  const inSession = status === SessionStatus.LISTENING || status === SessionStatus.CONNECTING;
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const displayed = illustrations.find(i => i.id === selectedId) ?? illustrations[0] ?? null;
+
+  // A newly generated image takes over the main view again
+  useEffect(() => { setSelectedId(null); }, [illustrations[0]?.id]);
   const transcriptsEndRef = useRef<HTMLDivElement>(null);
   const fullLogsRef = useRef<string[]>([]);
   
@@ -76,8 +89,12 @@ export default function App() {
           fullLogsRef.current.push(`[${new Date().toLocaleTimeString()}] ${descLog}`);
           setTranscripts(prev => [...prev, descLog]);
 
-          // Step 2: Generate illustration with session context for consistency
-          const imageUrl = await generateIllustration(request.sourceText, request.sessionContext);
+          // Step 2: Generate with the persistent story bible + previous picture for consistency
+          const prevImage = lastImageRef.current ? await downscaleImage(lastImageRef.current) : null;
+          const result = await generateImageViaApi(request.sourceText, storyBibleRef.current, prevImage);
+          const imageUrl = result.image;
+          storyBibleRef.current = result.storyBible;
+          lastImageRef.current = imageUrl;
 
           const newIll: Illustration = {
             id: request.id,
@@ -92,7 +109,9 @@ export default function App() {
           bufferManagerRef.current?.completeGeneration(request.id);
         } catch (e) {
           console.error("Generation failed:", e);
-          const errorLog = `❌ GENERATION FAILED: ${e instanceof Error ? e.message : 'Unknown error'}`;
+          const errorLog = e instanceof QuotaExceededError
+            ? `🚫 Image limit reached. You have used all your images.`
+            : `❌ GENERATION FAILED: ${e instanceof Error ? e.message : 'Unknown error'}`;
           fullLogsRef.current.push(`[${new Date().toLocaleTimeString()}] ${errorLog}`);
           setTranscripts(prev => [...prev, errorLog]);
           bufferManagerRef.current?.failGeneration(request.id);
@@ -106,6 +125,30 @@ export default function App() {
       sttManagerRef.current?.stop();
     };
   }, []);
+
+  // Language can only change while no session is running
+  useEffect(() => {
+    if (inSession) return;
+    sttManagerRef.current?.setLanguage(language);
+    localStorage.setItem('storyLang', language);
+  }, [language, inSession]);
+
+  const startNewStory = () => {
+    storyBibleRef.current = null;
+    lastImageRef.current = null;
+    setIllustrations([]);
+    setSelectedId(null);
+  };
+
+  // Reading time: heartbeat every 30s while listening and the tab is visible
+  useEffect(() => {
+    if (status !== SessionStatus.LISTENING) return;
+    track('listening_start');
+    const id = setInterval(() => {
+      if (document.visibilityState === 'visible') track('reading_heartbeat', { seconds: 30 });
+    }, 30000);
+    return () => { clearInterval(id); track('listening_stop'); };
+  }, [status]);
 
   // Auto-scroll transcripts
   useEffect(() => {
@@ -157,6 +200,26 @@ export default function App() {
           </div>
           
           <div className="flex items-center gap-3">
+            {/* Language slider (locked during a session) */}
+            <button
+              type="button"
+              role="switch"
+              aria-checked={language === 'en-US'}
+              disabled={inSession}
+              onClick={() => setLanguage(language === 'ro-RO' ? 'en-US' : 'ro-RO')}
+              title={inSession ? 'Pause the session to change language' : 'Reading language'}
+              className={`relative flex items-center w-20 h-8 rounded-full bg-magic-100 border border-magic-200 transition-opacity ${inSession ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+            >
+              <span className={`absolute top-0.5 left-0.5 w-9 h-6 rounded-full bg-magic-500 shadow transition-transform duration-200 ${language === 'en-US' ? 'translate-x-10' : ''}`} />
+              <span className={`relative z-10 w-1/2 text-center text-[11px] font-bold ${language === 'ro-RO' ? 'text-white' : 'text-magic-700'}`}>RO</span>
+              <span className={`relative z-10 w-1/2 text-center text-[11px] font-bold ${language === 'en-US' ? 'text-white' : 'text-magic-700'}`}>EN</span>
+            </button>
+
+            {illustrations.length > 0 && !inSession && (
+              <button onClick={startNewStory} className="text-xs text-gray-500 hover:text-gray-800 underline">
+                New story
+              </button>
+            )}
              {/* Audio Visualizer */}
             {status === SessionStatus.LISTENING && (
               <div className="flex items-center gap-1 h-8 px-3 bg-magic-50 rounded-full border border-magic-100">
@@ -180,6 +243,22 @@ export default function App() {
               </div>
             )}
             
+            {usage && (
+              <div
+                className={`text-xs font-bold px-2 py-1 rounded-full ${usage.used >= usage.quota ? 'bg-red-100 text-red-600' : 'bg-magic-100 text-magic-600'}`}
+                title="Images used"
+              >
+                {usage.used}/{usage.quota} 🖼️
+              </div>
+            )}
+
+            <button
+              onClick={() => supabase.auth.signOut()}
+              className="text-xs text-gray-500 hover:text-gray-800 underline"
+            >
+              Sign out
+            </button>
+
             {/* Debug Toggle */}
             <button 
               onClick={() => setDebugMode(!debugMode)}
@@ -195,7 +274,7 @@ export default function App() {
       <main className="flex-grow flex flex-col max-w-4xl mx-auto w-full px-4 pt-6 pb-24">
         <div className="w-full mb-8 relative z-10">
           <BookViewer 
-            currentIllustration={illustrations[0] || null} 
+            currentIllustration={displayed} 
             isGenerating={activeGenerations.length > 0} 
           />
         </div>
@@ -207,10 +286,15 @@ export default function App() {
               <span>Istoricul Poveștii (Timeline)</span>
             </div>
             <div className="flex gap-4 overflow-x-auto pb-4 px-2 snap-x scrollbar-hide">
-              {illustrations.slice(1).map((ill) => (
-                <div key={ill.id} className="flex-shrink-0 w-24 h-24 md:w-32 md:h-32 rounded-lg overflow-hidden border-2 border-white shadow-md opacity-60 hover:opacity-100 transition-opacity snap-start">
+              {illustrations.filter(ill => ill.id !== displayed?.id).map((ill) => (
+                <button
+                  key={ill.id}
+                  type="button"
+                  onClick={() => setSelectedId(ill.id)}
+                  className="flex-shrink-0 w-24 h-24 md:w-32 md:h-32 rounded-lg overflow-hidden border-2 border-white shadow-md opacity-60 hover:opacity-100 transition-opacity snap-start cursor-pointer"
+                >
                   <img src={ill.url} alt="History" className="w-full h-full object-cover" />
-                </div>
+                </button>
               ))}
             </div>
           </div>
