@@ -146,7 +146,7 @@ test('runtime: a spoken story produces an illustration with no console or page e
   const errors: string[] = [];
   page.on('pageerror', e => errors.push(`pageerror: ${e.message}`));
   page.on('console', m => {
-    if (m.type() === 'error' && !m.text().includes('favicon')) errors.push(`console: ${m.text()}`);
+    if (m.type() === 'error' && !m.text().includes('favicon')) errors.push(`console: ${m.text()} (${m.location().url})`);
   });
 
   await installFakeSpeech(page);
