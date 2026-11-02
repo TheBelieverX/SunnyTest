@@ -2,11 +2,46 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Mic, MicOff, BookOpen, Clock, Terminal, X, Download } from 'lucide-react';
 import { WebSpeechSTTManager } from './services/webSpeechSTT';
 import { BufferManager, GenerationRequest } from './services/bufferManager';
-import { generateImageViaApi, downscaleImage, StoryBible, useUsage, track, QuotaExceededError } from './services/api';
+import { generateImageViaApi, downscaleImage, StoryBible, track, QuotaExceededError } from './services/api';
 import { supabase } from './services/supabase';
 import { Illustration, SessionStatus } from './types';
 import { MagicButton } from './components/MagicButton';
 import { BookViewer } from './components/BookViewer';
+
+const STRINGS = {
+  'ro-RO': {
+    subtitle: 'Cititor de Povești',
+    langTitle: 'Limba de citire',
+    langLocked: 'Pune sesiunea pe pauză pentru a schimba limba',
+    newStory: 'Poveste nouă',
+    signOut: 'Deconectare',
+    debugToggle: 'Arată/ascunde consola de depanare',
+    timeline: 'Istoricul Poveștii',
+    historyAlt: 'Istoric',
+    words: 'Cuvinte',
+    generating: 'Se generează',
+    downloadLog: 'Descarcă jurnalul complet',
+    waiting: 'Se așteaptă vorbirea...',
+    pause: 'Pauză',
+    start: 'Începe Citirea',
+  },
+  'en-US': {
+    subtitle: 'Story Reader',
+    langTitle: 'Reading language',
+    langLocked: 'Pause the session to change language',
+    newStory: 'New story',
+    signOut: 'Sign out',
+    debugToggle: 'Toggle Debug Console',
+    timeline: 'Story Timeline',
+    historyAlt: 'History',
+    words: 'Words',
+    generating: 'Generating',
+    downloadLog: 'Download Full Log',
+    waiting: 'Waiting for speech...',
+    pause: 'Pause',
+    start: 'Start Reading',
+  },
+} as const;
 
 export default function App() {
   const [status, setStatus] = useState<SessionStatus>(SessionStatus.IDLE);
@@ -16,13 +51,13 @@ export default function App() {
   const [transcripts, setTranscripts] = useState<string[]>([]);
   const [currentWordCount, setCurrentWordCount] = useState(0);
   const [activeGenerations, setActiveGenerations] = useState<string[]>([]);
-  const usage = useUsage();
   const storyBibleRef = useRef<StoryBible | null>(null);
   const lastImageRef = useRef<string | null>(null);
   const [language, setLanguage] = useState<'ro-RO' | 'en-US'>(
     () => (localStorage.getItem('storyLang') === 'en-US' ? 'en-US' : 'ro-RO')
   );
   const inSession = status === SessionStatus.LISTENING || status === SessionStatus.CONNECTING;
+  const t = STRINGS[language];
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const displayed = illustrations.find(i => i.id === selectedId) ?? illustrations[0] ?? null;
 
@@ -195,7 +230,7 @@ export default function App() {
               <h1 className="text-xl font-display font-bold bg-gradient-to-r from-magic-600 to-purple-600 bg-clip-text text-transparent leading-none mb-1">
                 Povești Magice
               </h1>
-              <p className="text-[10px] text-gray-500 font-bold tracking-widest uppercase">Story Reader</p>
+              <p className="text-[10px] text-gray-500 font-bold tracking-widest uppercase">{t.subtitle}</p>
             </div>
           </div>
           
@@ -207,7 +242,7 @@ export default function App() {
               aria-checked={language === 'en-US'}
               disabled={inSession}
               onClick={() => setLanguage(language === 'ro-RO' ? 'en-US' : 'ro-RO')}
-              title={inSession ? 'Pause the session to change language' : 'Reading language'}
+              title={inSession ? t.langLocked : t.langTitle}
               className={`relative flex items-center w-20 h-8 rounded-full bg-magic-100 border border-magic-200 transition-opacity ${inSession ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
             >
               <span className={`absolute top-0.5 left-0.5 w-9 h-6 rounded-full bg-magic-500 shadow transition-transform duration-200 ${language === 'en-US' ? 'translate-x-10' : ''}`} />
@@ -217,7 +252,7 @@ export default function App() {
 
             {illustrations.length > 0 && !inSession && (
               <button onClick={startNewStory} className="text-xs text-gray-500 hover:text-gray-800 underline">
-                New story
+                {t.newStory}
               </button>
             )}
              {/* Audio Visualizer */}
@@ -242,28 +277,19 @@ export default function App() {
                 {activeGenerations.length} 🎨
               </div>
             )}
-            
-            {usage && (
-              <div
-                className={`text-xs font-bold px-2 py-1 rounded-full ${usage.used >= usage.quota ? 'bg-red-100 text-red-600' : 'bg-magic-100 text-magic-600'}`}
-                title="Images used"
-              >
-                {usage.used}/{usage.quota} 🖼️
-              </div>
-            )}
 
             <button
               onClick={() => supabase.auth.signOut()}
               className="text-xs text-gray-500 hover:text-gray-800 underline"
             >
-              Sign out
+              {t.signOut}
             </button>
 
             {/* Debug Toggle */}
             <button 
               onClick={() => setDebugMode(!debugMode)}
               className={`p-2 rounded-full transition-colors ${debugMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
-              title="Toggle Debug Console"
+              title={t.debugToggle}
             >
               <Terminal size={18} />
             </button>
@@ -276,6 +302,8 @@ export default function App() {
           <BookViewer 
             currentIllustration={displayed} 
             isGenerating={activeGenerations.length > 0} 
+            language={language}
+            inSession={inSession}
           />
         </div>
 
@@ -283,7 +311,7 @@ export default function App() {
           <div className="animate-fade-in">
             <div className="flex items-center gap-2 mb-4 text-gray-400 uppercase tracking-widest text-xs font-bold">
               <Clock size={12} />
-              <span>Istoricul Poveștii (Timeline)</span>
+              <span>{t.timeline}</span>
             </div>
             <div className="flex gap-4 overflow-x-auto pb-4 px-2 snap-x scrollbar-hide">
               {illustrations.filter(ill => ill.id !== displayed?.id).map((ill) => (
@@ -293,7 +321,7 @@ export default function App() {
                   onClick={() => setSelectedId(ill.id)}
                   className="flex-shrink-0 w-24 h-24 md:w-32 md:h-32 rounded-lg overflow-hidden border-2 border-white shadow-md opacity-60 hover:opacity-100 transition-opacity snap-start cursor-pointer"
                 >
-                  <img src={ill.url} alt="History" className="w-full h-full object-cover" />
+                  <img src={ill.url} alt={t.historyAlt} className="w-full h-full object-cover" />
                 </button>
               ))}
             </div>
@@ -307,14 +335,14 @@ export default function App() {
           <div className="flex items-center justify-between px-3 py-2 bg-gray-800/50 border-b border-gray-700">
             <span className="font-bold flex items-center gap-2">
               <Terminal size={12} /> 
-              <span>Words: <span className="text-white">{currentWordCount}</span> / 70</span>
-              {activeGenerations.length > 0 && <span className="ml-2">| Generating: {activeGenerations.length}</span>}
+              <span>{t.words}: <span className="text-white">{currentWordCount}</span> / 70</span>
+                            {activeGenerations.length > 0 && <span className="ml-2">| {t.generating}: {activeGenerations.length}</span>}
             </span>
             <div className="flex items-center gap-2">
               <button 
                 onClick={downloadLogs} 
                 className="text-gray-400 hover:text-white p-1 hover:bg-gray-700 rounded transition-colors"
-                title="Download Full Log"
+                title={t.downloadLog}
               >
                 <Download size={14} />
               </button>
@@ -324,7 +352,7 @@ export default function App() {
             </div>
           </div>
           <div className="p-3 h-48 overflow-y-auto space-y-2">
-            {transcripts.length === 0 && <p className="text-gray-500 italic">Waiting for speech...</p>}
+            {transcripts.length === 0 && <p className="text-gray-500 italic">{t.waiting}</p>}
             {transcripts.map((t, i) => (
               <div key={i} className="break-words border-b border-gray-800 pb-1 last:border-0">
                 <span className="text-gray-500 mr-2 text-[10px]">[{new Date().toLocaleTimeString().split(' ')[0]}]</span>
@@ -347,7 +375,7 @@ export default function App() {
             {status === SessionStatus.LISTENING ? (
               <div className="flex items-center gap-2">
                 <MicOff size={24} />
-                <span>Pauză (Pause)</span>
+                <span>{t.pause}</span>
               </div>
             ) : (
               <div className="flex items-center gap-2">
@@ -356,7 +384,7 @@ export default function App() {
                 ) : (
                   <Mic size={24} />
                 )}
-                <span>Începe Citirea (Start Reading)</span>
+                <span>{t.start}</span>
               </div>
             )}
           </MagicButton>

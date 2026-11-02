@@ -100,22 +100,37 @@ export class BufferManager {
    * Trigger image generation for accumulated text
    */
   private triggerGeneration() {
-    if (this.wordBuffer.trim().length === 0) return;
+    // Use everything heard so far, including the current interim words that were counted
+    const heard = (this.wordBuffer + ' ' + this.interimBuffer).trim();
+    if (heard.length === 0) return;
+
+    // A slow generation must not build a backlog: merge into the pending request instead
+    const pending = this.generationQueue[this.generationQueue.length - 1];
+    if (pending) {
+      pending.sourceText = (pending.sourceText + ' ' + heard).trim();
+      this.sessionHistory.push(heard);
+      this.wordBuffer = '';
+      this.interimBuffer = '';
+      this.wordCount = 0;
+      this.maxWordCount = 0;
+      this.onWordCountChange?.(0);
+      return;
+    }
 
     // Build session context from history
     const sessionContext = this.buildSessionContext();
     
     const request: GenerationRequest = {
       id: Date.now().toString(),
-      sourceText: this.wordBuffer.trim(), // Only final results for generation
+      sourceText: heard,
       timestamp: Date.now(),
       status: 'pending',
       sessionContext: sessionContext,
     };
 
     // Add current text to session history for future context
-    this.sessionHistory.push(this.wordBuffer.trim());
-    this.extractAttributes(this.wordBuffer.trim());
+    this.sessionHistory.push(heard);
+    this.extractAttributes(heard);
 
     this.generationQueue.push(request);
     this.wordBuffer = ''; // Clear final buffer

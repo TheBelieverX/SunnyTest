@@ -17,13 +17,14 @@ export function useUsage() {
   return u;
 }
 
-export async function authFetch(path: string, body?: unknown): Promise<Response> {
+export async function authFetch(path: string, body?: unknown, signal?: AbortSignal): Promise<Response> {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
   return fetch(path, {
     method: body === undefined ? 'GET' : 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token ?? ''}` },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
   });
 }
 
@@ -63,7 +64,8 @@ export async function generateImageViaApi(
   storyBible: StoryBible | null,
   previousImage: string | null
 ): Promise<{ image: string; storyBible: StoryBible }> {
-  const res = await authFetch('/api/generate-image', { description, storyBible, previousImage });
+  const res = await authFetch('/api/generate-image', { description, storyBible, previousImage }, AbortSignal.timeout(90_000))
+    .catch(e => { throw e?.name === 'TimeoutError' ? new Error('Image generation timed out') : e; });
   const json = await res.json().catch(() => ({}));
   if (res.status === 429) {
     setUsage({ used: json.used, quota: json.quota });

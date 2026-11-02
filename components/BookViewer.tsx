@@ -1,13 +1,16 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Illustration } from '../types';
-import { Sparkles, Maximize2, Minimize2 } from 'lucide-react';
+import { Sparkles, Mic, Maximize2, Minimize2 } from 'lucide-react';
+import { DemoPlayer } from './DemoPlayer';
 
 interface Props {
   currentIllustration: Illustration | null;
   isGenerating: boolean;
+  language: 'ro-RO' | 'en-US';
+  inSession: boolean;
 }
 
-export const BookViewer: React.FC<Props> = ({ currentIllustration, isGenerating }) => {
+export const BookViewer: React.FC<Props> = ({ currentIllustration, isGenerating, language, inSession }) => {
   const [activeImage, setActiveImage] = useState<Illustration | null>(null);
   const [transitionImage, setTransitionImage] = useState<Illustration | null>(null);
   const [isTransitioning, setIsTransitioning] = useState(false);
@@ -71,14 +74,17 @@ export const BookViewer: React.FC<Props> = ({ currentIllustration, isGenerating 
       } overflow-hidden transition-all duration-500 group`}
     >
       {/* State 1: Empty Placeholder */}
-      {!hasImages && !isGenerating && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center bg-white">
-          <div className="bg-magic-50 p-6 rounded-full mb-4">
-            <Sparkles className="w-12 h-12 text-magic-300" />
+      {!hasImages && !isGenerating && !inSession && <DemoPlayer language={language} />}
+
+      {/* Listening, no image yet */}
+      {!hasImages && !isGenerating && inSession && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center bg-magic-50">
+          <div className="bg-magic-500 text-white p-5 rounded-full mb-4 animate-pulse">
+            <Mic className="w-10 h-10" />
           </div>
-          <h3 className="text-xl font-display text-magic-800 font-bold mb-2">Cartea este deschisă...</h3>
-          <p className="text-gray-500">Începe să citești pentru a vedea magia.</p>
-          <p className="text-sm text-gray-400 mt-1">(The book is open. Start reading to see magic.)</p>
+          <p className="text-lg font-display font-bold text-magic-800">
+            {language === 'ro-RO' ? 'Te ascult... spune povestea!' : "I'm listening... tell your story!"}
+          </p>
         </div>
       )}
 
@@ -90,7 +96,7 @@ export const BookViewer: React.FC<Props> = ({ currentIllustration, isGenerating 
             <div className="absolute inset-0 w-full h-full">
               <img 
                 src={activeImage.url} 
-                alt="Current Scene" 
+                alt={language === 'ro-RO' ? 'Scena curentă' : 'Current Scene'} 
                 className="w-full h-full object-cover"
               />
             </div>
@@ -103,7 +109,7 @@ export const BookViewer: React.FC<Props> = ({ currentIllustration, isGenerating 
             >
               <img 
                 src={transitionImage.url} 
-                alt="Next Scene" 
+                alt={language === 'ro-RO' ? 'Scena următoare' : 'Next Scene'} 
                 className="w-full h-full object-cover"
               />
               {/* Flash effect for magic */}
@@ -118,7 +124,7 @@ export const BookViewer: React.FC<Props> = ({ currentIllustration, isGenerating 
         <div className="absolute inset-0 z-20 pointer-events-none flex items-center justify-center">
           <div className="bg-white/90 backdrop-blur-sm px-6 py-3 rounded-full shadow-lg flex items-center gap-3 animate-bounce">
             <Sparkles className="w-5 h-5 text-magic-500 animate-spin" />
-            <span className="font-display font-bold text-magic-800">Se pictează... (Painting...)</span>
+            <span className="font-display font-bold text-magic-800">{language === 'ro-RO' ? 'Se pictează...' : 'Painting...'}</span>
           </div>
         </div>
       )}
@@ -127,7 +133,9 @@ export const BookViewer: React.FC<Props> = ({ currentIllustration, isGenerating 
       <button
         onClick={toggleFullscreen}
         className="absolute top-4 right-4 z-30 p-3 bg-black/40 hover:bg-black/60 text-white rounded-full backdrop-blur-sm transition-all duration-200"
-        title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
+        title={isFullscreen
+          ? (language === 'ro-RO' ? 'Ieși din ecran complet' : 'Exit Fullscreen')
+          : (language === 'ro-RO' ? 'Ecran complet' : 'Enter Fullscreen')}
       >
         {isFullscreen ? <Minimize2 size={24} /> : <Maximize2 size={24} />}
       </button>

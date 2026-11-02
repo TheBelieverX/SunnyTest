@@ -37,8 +37,8 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
     try {
       return await fn();
     } catch (err) {
-      if ((err as any)?.status !== 429 || attempt >= 3) throw err;
-      await new Promise(r => setTimeout(r, 3000 * (attempt + 1) + Math.random() * 1000));
+      if ((err as any)?.status !== 429 || attempt >= 1) throw err;
+      await new Promise(r => setTimeout(r, 2000 + Math.random() * 1000));
     }
   }
 }
