@@ -7,10 +7,11 @@ interface Props {
   language: Lang;
 }
 
-type Phase = { kind: 'say' | 'paint' | 'scene'; ms: number; line: 0 | 1 };
+type Phase = { kind: 'intro' | 'say' | 'paint' | 'scene'; ms: number; line: 0 | 1 };
 
-// Total loop length is 20 seconds.
+// Total loop length is 26 seconds.
 const PHASES: Phase[] = [
+  { kind: 'intro', ms: 6000, line: 0 },
   { kind: 'say', ms: 5000, line: 0 },
   { kind: 'paint', ms: 2500, line: 0 },
   { kind: 'scene', ms: 4000, line: 0 },
@@ -30,14 +31,18 @@ const LINES: Record<Lang, string[]> = {
   ],
 };
 
-const COPY: Record<Lang, { title: string; steps: string[]; hint: string }> = {
+const COPY: Record<Lang, { title: string; steps: string[]; hint: string; intro: string; introAlt: string }> = {
   'ro-RO': {
     title: 'Cum funcționează',
+    intro: 'Citiți cu voce tare dintr-o carte, lângă un ecran.',
+    introAlt: 'Un tată citește cu voce tare unei fetițe, iar pe tabletă apare un castel pictat.',
     steps: ['1. Spune o poveste', '2. Aplicația o pictează', '3. Povestea continuă'],
     hint: 'Apasă butonul de jos și începe povestea ta.',
   },
   'en-US': {
     title: 'How it works',
+    intro: 'Read a book aloud, next to a screen.',
+    introAlt: 'A dad reads aloud to his daughter while a painted castle appears on the tablet.',
     steps: ['1. Tell a story', '2. The app paints it', '3. The story goes on'],
     hint: 'Tap the button below and start your story.',
   },
@@ -60,7 +65,7 @@ export const DemoPlayer: React.FC<Props> = ({ language }) => {
   let phaseIndex = 0;
   let phaseStart = 0;
   if (reducedMotion) {
-    phaseIndex = 2;
+    phaseIndex = 0;
   } else {
     let acc = 0;
     for (let i = 0; i < PHASES.length; i++) {
@@ -80,12 +85,24 @@ export const DemoPlayer: React.FC<Props> = ({ language }) => {
       ? text.slice(0, Math.ceil((text.length * Math.min(1, elapsed / (phase.ms - 800)))))
       : text;
   const copy = COPY[language];
-  const activeStep = phase.line === 1 ? 2 : phase.kind === 'say' ? 0 : 1;
+  const activeStep = phase.kind === 'intro' ? -1 : phase.line === 1 ? 2 : phase.kind === 'say' ? 0 : 1;
 
   return (
     <div className="absolute inset-0 flex flex-col bg-white" aria-label={copy.title}>
       <div className="flex-1 relative overflow-hidden">
-        {phase.kind === 'scene' ? (
+        {phase.kind === 'intro' ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-magic-50 animate-fade-in">
+            <img
+              src="/demo-reading.jpg"
+              alt={copy.introAlt}
+              className="min-h-0 flex-1 w-full object-contain"
+              decoding="async"
+            />
+            <p className="px-4 pb-3 text-center text-sm md:text-lg font-display font-bold text-magic-800">
+              {copy.intro}
+            </p>
+          </div>
+        ) : phase.kind === 'scene' ? (
           <div
             key={phaseIndex}
             className={`absolute inset-0 flex flex-col items-center justify-center animate-fade-in ${

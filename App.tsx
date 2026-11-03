@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mic, MicOff, BookOpen, Clock, Terminal, X, Download } from 'lucide-react';
+import { Mic, MicOff, BookOpen, Clock, Terminal, X, Download, MessageSquare } from 'lucide-react';
 import { WebSpeechSTTManager } from './services/webSpeechSTT';
 import { BufferManager, GenerationRequest } from './services/bufferManager';
 import { generateImageViaApi, downscaleImage, StoryBible, track, QuotaExceededError } from './services/api';
@@ -7,14 +7,17 @@ import { supabase } from './services/supabase';
 import { Illustration, SessionStatus } from './types';
 import { MagicButton } from './components/MagicButton';
 import { BookViewer } from './components/BookViewer';
+import { FeedbackModal } from './components/FeedbackModal';
 
 const STRINGS = {
   'ro-RO': {
-    subtitle: 'Cititor de Povești',
+    title: 'Povești Magice',
+    subtitle: 'Vizualizator de Povești',
     langTitle: 'Limba de citire',
     langLocked: 'Pune sesiunea pe pauză pentru a schimba limba',
     newStory: 'Poveste nouă',
     signOut: 'Deconectare',
+    feedback: 'Trimite feedback',
     debugToggle: 'Arată/ascunde consola de depanare',
     timeline: 'Istoricul Poveștii',
     historyAlt: 'Istoric',
@@ -26,11 +29,13 @@ const STRINGS = {
     start: 'Începe Citirea',
   },
   'en-US': {
-    subtitle: 'Story Reader',
+    title: 'Magic Stories',
+    subtitle: 'Story Visualizer',
     langTitle: 'Reading language',
     langLocked: 'Pause the session to change language',
     newStory: 'New story',
     signOut: 'Sign out',
+    feedback: 'Send feedback',
     debugToggle: 'Toggle Debug Console',
     timeline: 'Story Timeline',
     historyAlt: 'History',
@@ -48,6 +53,8 @@ export default function App() {
   const [illustrations, setIllustrations] = useState<Illustration[]>([]);
   const [audioVolume, setAudioVolume] = useState(0);
   const [debugMode, setDebugMode] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const closeFeedback = useCallback(() => setFeedbackOpen(false), []);
   const [transcripts, setTranscripts] = useState<string[]>([]);
   const [currentWordCount, setCurrentWordCount] = useState(0);
   const [activeGenerations, setActiveGenerations] = useState<string[]>([]);
@@ -228,7 +235,7 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-xl font-display font-bold bg-gradient-to-r from-magic-600 to-purple-600 bg-clip-text text-transparent leading-none mb-1">
-                Povești Magice
+                {t.title}
               </h1>
               <p className="text-[10px] text-gray-500 font-bold tracking-widest uppercase">{t.subtitle}</p>
             </div>
@@ -285,6 +292,15 @@ export default function App() {
               {t.signOut}
             </button>
 
+            <button
+              type="button"
+              onClick={() => setFeedbackOpen(true)}
+              className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-magic-200 px-2.5 py-2 text-xs font-semibold text-magic-700 hover:bg-magic-50"
+            >
+              <MessageSquare size={16} />
+              {t.feedback}
+            </button>
+
             {/* Debug Toggle */}
             <button 
               onClick={() => setDebugMode(!debugMode)}
@@ -294,6 +310,16 @@ export default function App() {
               <Terminal size={18} />
             </button>
           </div>
+        </div>
+        <div className="max-w-4xl mx-auto flex justify-end px-4 pb-2 sm:hidden">
+          <button
+            type="button"
+            onClick={() => setFeedbackOpen(true)}
+            className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-magic-200 bg-white px-3 text-sm font-semibold text-magic-700 shadow-sm hover:bg-magic-50"
+          >
+            <MessageSquare size={16} />
+            {t.feedback}
+          </button>
         </div>
       </header>
 
@@ -390,6 +416,7 @@ export default function App() {
           </MagicButton>
         </div>
       </div>
+      {feedbackOpen && <FeedbackModal language={language} onClose={closeFeedback} />}
     </div>
   );
 }

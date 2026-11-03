@@ -1,4 +1,4 @@
--- Run once in Supabase Dashboard > SQL Editor.
+-- Apply in Supabase Dashboard > SQL Editor when setting up or updating the schema.
 
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
@@ -17,6 +17,18 @@ create table if not exists public.usage_events (
   created_at timestamptz not null default now()
 );
 create index if not exists usage_events_user_type_idx on public.usage_events (user_id, type, created_at);
+
+create table if not exists public.feedback (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  category text not null check (category in ('bug', 'idea', 'other')),
+  message text not null check (char_length(message) between 1 and 1000),
+  rating int check (rating between 1 and 5),
+  follow_up boolean not null default false,
+  created_at timestamptz not null default now()
+);
+create index if not exists feedback_user_created_idx on public.feedback (user_id, created_at desc);
+alter table public.feedback enable row level security;
 
 -- Users can only read their own profile; all writes go through the server (service role).
 alter table public.profiles enable row level security;
