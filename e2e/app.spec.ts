@@ -287,9 +287,14 @@ test('demo: the intro shows a parent reading aloud next to a screen, in both lan
   await expect(img).toBeVisible();
   await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)).toBe(true);
   await expect(page.getByText('Citiți cu voce tare dintr-o carte, lângă un ecran.')).toBeVisible();
+  await expect(page.getByText('1. Începutul')).toBeVisible();
+  await expect(page.getByText('4. Povestea continuă')).toBeVisible();
 
   await page.getByRole('switch').click();
   await expect(page.getByRole('img', { name: /dad reads aloud/ })).toBeVisible();
   await expect(page.getByText('Read a book aloud, next to a screen.')).toBeVisible();
+  await expect(page.getByText('1. Setup')).toBeVisible();
+  await expect(page.getByText('2. Tell a story')).toBeVisible();
+  await expect(page.getByText('4. The story goes on')).toBeVisible();
   await page.screenshot({ path: 'test-results/demo-intro-en.png' });
 });

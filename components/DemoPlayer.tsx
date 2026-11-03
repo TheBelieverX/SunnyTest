@@ -36,14 +36,14 @@ const COPY: Record<Lang, { title: string; steps: string[]; hint: string; intro: 
     title: 'Cum funcționează',
     intro: 'Citiți cu voce tare dintr-o carte, lângă un ecran.',
     introAlt: 'Un tată citește cu voce tare unei fetițe, iar pe tabletă apare un castel pictat.',
-    steps: ['1. Spune o poveste', '2. Aplicația o pictează', '3. Povestea continuă'],
+    steps: ['1. Începutul', '2. Spune o poveste', '3. Aplicația o pictează', '4. Povestea continuă'],
     hint: 'Apasă butonul de jos și începe povestea ta.',
   },
   'en-US': {
     title: 'How it works',
     intro: 'Read a book aloud, next to a screen.',
     introAlt: 'A dad reads aloud to his daughter while a painted castle appears on the tablet.',
-    steps: ['1. Tell a story', '2. The app paints it', '3. The story goes on'],
+    steps: ['1. Setup', '2. Tell a story', '3. The app paints it', '4. The story goes on'],
     hint: 'Tap the button below and start your story.',
   },
 };
@@ -85,7 +85,7 @@ export const DemoPlayer: React.FC<Props> = ({ language }) => {
       ? text.slice(0, Math.ceil((text.length * Math.min(1, elapsed / (phase.ms - 800)))))
       : text;
   const copy = COPY[language];
-  const activeStep = phase.kind === 'intro' ? -1 : phase.line === 1 ? 2 : phase.kind === 'say' ? 0 : 1;
+  const activeStep = phase.kind === 'intro' ? 0 : phase.line === 1 ? 3 : phase.kind === 'say' ? 1 : 2;
 
   return (
     <div className="absolute inset-0 flex flex-col bg-white" aria-label={copy.title}>
