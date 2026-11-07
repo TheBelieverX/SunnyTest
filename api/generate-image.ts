@@ -1,8 +1,10 @@
 import { GoogleGenAI } from '@google/genai';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { admin, requireUser } from './_lib/server.js';
+import { ImageTiming } from './_lib/imageTiming.js';
+import { IMAGE_MODEL } from '../imageModel.js';
+import { MAX_NARRATION_CHARS } from '../generationLimits.js';
 
-const MAX_TEXT = 4000;
 const MAX_IMAGE_B64 = 1_500_000;
 const DEFAULT_STYLE = "friendly, soft children's-book digital illustration with vibrant colors";
 
@@ -45,7 +47,7 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
 
 // A text model keeps a persistent character sheet and turns the new narration into a concrete scene.
 // If it fails, fall back to the raw narration so image generation still works.
-async function updateBible(ai: GoogleGenAI, bible: StoryBible, text: string): Promise<{ bible: StoryBible; scene: string }> {
+async function updateBible(ai: GoogleGenAI, bible: StoryBible, text: string, timing: ImageTiming): Promise<{ bible: StoryBible; scene: string; promptChars: number }> {
   const prompt = `
 You maintain a "story bible" for an illustrated children's story that is being told aloud. The text may be Romanian or English and comes from speech-to-text, so it may contain mistakes.
 
@@ -70,18 +72,22 @@ Rules:
 `.trim();
 
   try {
-    const r = await withRetry(() => ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: { responseMimeType: 'application/json', temperature: 0.2 },
+    const r = await timing.measure('story_model', () => withRetry(() => {
+      timing.attempt('story_model');
+      return ai.models.generateContent({
+        model: 'gemini-3.5-flash-lite',
+        contents: prompt,
+        config: { responseMimeType: 'application/json', temperature: 0.2 },
+      });
     }));
     const json = JSON.parse(r.text || '');
     const scene = clip(json.scene, 1200);
     if (!scene) throw new Error('empty scene');
-    return { bible: sanitizeBible(json), scene };
+    return { bible: sanitizeBible(json), scene, promptChars: prompt.length };
   } catch (e) {
+    timing.storyFallback = true;
     console.error('Story bible update failed, falling back to raw text:', e);
-    return { bible, scene: text };
+    return { bible, scene: text, promptChars: prompt.length };
   }
 }
 
@@ -99,32 +105,37 @@ function describeUpstream(e: unknown): string {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const timing = new ImageTiming(res);
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const user = await requireUser(req, res);
+  const user = await timing.measure('auth', () => requireUser(req, res));
   if (!user) return;
 
   const { description, storyBible, previousImage } = req.body || {};
-  if (typeof description !== 'string' || !description.trim() || description.length > MAX_TEXT) {
+  if (typeof description !== 'string' || !description.trim() || description.length > MAX_NARRATION_CHARS) {
     return res.status(400).json({ error: 'Invalid description' });
   }
   const bible = sanitizeBible(storyBible);
   const prevMatch = typeof previousImage === 'string' && previousImage.length < MAX_IMAGE_B64
     ? previousImage.match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/)
     : null;
+  timing.hasReference = !!prevMatch;
 
   // Reserve a credit before spending money on Gemini.
-  const { data: credit, error: creditErr } = await admin.rpc('consume_image_credit', { p_user: user.id });
+  const { data: credit, error: creditErr } = await timing.measure('quota', () =>
+    admin.rpc('consume_image_credit', { p_user: user.id }));
   if (creditErr || !credit?.[0]) return res.status(500).json({ error: 'Quota check failed' });
   const { ok, used, quota } = credit[0];
   if (!ok) {
     return res.status(429).json({ error: 'Image limit reached', code: 'QUOTA_EXCEEDED', used, quota });
   }
 
+  const streaming = req.headers.accept?.includes('application/x-ndjson') === true;
+  let streamStarted = false;
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
 
-    const { bible: updatedBible, scene } = await updateBible(ai, bible, description.trim());
+    const { bible: updatedBible, scene, promptChars: storyPromptChars } = await updateBible(ai, bible, description.trim(), timing);
 
     const characterSheet = updatedBible.characters
       .map(c => `- ${c.name}: ${c.description}`)
@@ -154,9 +165,18 @@ ${prevMatch ? '- A reference image of the previous scene is attached. Keep the s
     if (prevMatch) parts.push({ inlineData: { mimeType: prevMatch[1], data: prevMatch[2] } });
     parts.push({ text: prompt });
 
-    const response = await withRetry(() => ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: { parts },
+    if (streaming) {
+      res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store, no-transform');
+      res.write(`${JSON.stringify({ type: 'image_started', storyPromptChars, imagePromptChars: prompt.length })}\n`);
+      streamStarted = true;
+    }
+    const response = await timing.measure('image_model', () => withRetry(() => {
+      timing.attempt('image_model');
+      return ai.models.generateContent({
+        model: IMAGE_MODEL,
+        contents: { parts },
+      });
     }));
 
     const candidate = response.candidates?.[0];
@@ -175,12 +195,14 @@ ${prevMatch ? '- A reference image of the previous scene is attached. Keep the s
       meta: { chars: description.length },
     });
 
-    return res.status(200).json({
+    const result = {
       image: `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`,
       storyBible: updatedBible,
       used,
       quota,
-    });
+    };
+    if (streamStarted) return res.end(`${JSON.stringify({ type: 'result', ...result })}\n`);
+    return res.status(200).json(result);
   } catch (e) {
     await admin.rpc('refund_image_credit', { p_user: user.id });
     console.error('Image generation failed:', e);
@@ -191,6 +213,11 @@ ${prevMatch ? '- A reference image of the previous scene is attached. Keep the s
       type: 'image_failed',
       meta: { status: status ?? null, detail },
     });
-    return res.status(502).json({ error: `Image generation failed: ${detail}` });
+    const error = `Image generation failed: ${detail}`;
+    if (streamStarted) {
+      timing.responseStatus = 502;
+      return res.end(`${JSON.stringify({ type: 'error', error })}\n`);
+    }
+    return res.status(502).json({ error });
   }
 }

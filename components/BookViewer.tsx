@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { Illustration } from '../types';
 import { Sparkles, Mic, Maximize2, Minimize2 } from 'lucide-react';
 import { DemoPlayer } from './DemoPlayer';
+import { IMAGE_MODEL } from '../imageModel';
 
 interface Props {
   currentIllustration: Illustration | null;
@@ -39,14 +40,21 @@ export const BookViewer: React.FC<Props> = ({ currentIllustration, isGenerating,
   };
 
   useEffect(() => {
+    if (!currentIllustration) {
+      setActiveImage(null);
+      setTransitionImage(null);
+      setIsTransitioning(false);
+      return;
+    }
+
     // Initial load
-    if (currentIllustration && !activeImage) {
+    if (!activeImage) {
       setActiveImage(currentIllustration);
       return;
     }
 
     // New image arrived
-    if (currentIllustration && activeImage && currentIllustration.id !== activeImage.id) {
+    if (currentIllustration.id !== activeImage.id) {
       setTransitionImage(currentIllustration);
       setIsTransitioning(true);
 
@@ -59,6 +67,9 @@ export const BookViewer: React.FC<Props> = ({ currentIllustration, isGenerating,
 
       return () => clearTimeout(timer);
     }
+
+    setTransitionImage(null);
+    setIsTransitioning(false);
   }, [currentIllustration, activeImage]);
 
   // Determine if we are in the "Empty/Start" state
@@ -83,7 +94,7 @@ export const BookViewer: React.FC<Props> = ({ currentIllustration, isGenerating,
             <Mic className="w-10 h-10" />
           </div>
           <p className="text-lg font-display font-bold text-magic-800">
-            {language === 'ro-RO' ? 'Te ascult... spune povestea!' : "I'm listening... tell your story!"}
+            {language === 'ro-RO' ? 'Te ascult... citește mai departe și vor apărea imagini despre povestea ta.' : "I'm listening... keep reading and pictures will appear about your story."}
           </p>
         </div>
       )}
@@ -112,8 +123,6 @@ export const BookViewer: React.FC<Props> = ({ currentIllustration, isGenerating,
                 alt={language === 'ro-RO' ? 'Scena următoare' : 'Next Scene'} 
                 className="w-full h-full object-cover"
               />
-              {/* Flash effect for magic */}
-              <div className={`absolute inset-0 bg-white mix-blend-overlay transition-opacity duration-[600ms] ${isTransitioning ? 'opacity-30' : 'opacity-0'}`}></div>
             </div>
           )}
         </>
@@ -128,6 +137,10 @@ export const BookViewer: React.FC<Props> = ({ currentIllustration, isGenerating,
           </div>
         </div>
       )}
+
+      <div className="absolute bottom-2 left-2 z-30 max-w-[calc(100%-1rem)] rounded bg-black/60 px-2 py-1 text-[10px] leading-tight text-white backdrop-blur-sm">
+        {language === 'ro-RO' ? 'Model imagini' : 'Image model'}: {IMAGE_MODEL}
+      </div>
 
       {/* Fullscreen Toggle Button - Always Visible now */}
       <button

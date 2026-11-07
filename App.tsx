@@ -2,12 +2,13 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Mic, MicOff, BookOpen, Clock, Terminal, X, Download, MessageSquare } from 'lucide-react';
 import { WebSpeechSTTManager } from './services/webSpeechSTT';
 import { BufferManager, GenerationRequest } from './services/bufferManager';
-import { generateImageViaApi, downscaleImage, StoryBible, track, QuotaExceededError } from './services/api';
+import { generateImageViaApi, downscaleImage, StoryBible, track, QuotaExceededError, useUsage } from './services/api';
 import { supabase } from './services/supabase';
 import { Illustration, SessionStatus } from './types';
 import { MagicButton } from './components/MagicButton';
 import { BookViewer } from './components/BookViewer';
 import { FeedbackModal } from './components/FeedbackModal';
+import { MAX_NARRATION_CHARS } from './generationLimits';
 
 const STRINGS = {
   'ro-RO': {
@@ -19,6 +20,7 @@ const STRINGS = {
     signOut: 'Deconectare',
     feedback: 'Trimite feedback',
     debugToggle: 'Arată/ascunde consola de depanare',
+    debugLog: 'Jurnal de depanare',
     timeline: 'Istoricul Poveștii',
     historyAlt: 'Istoric',
     words: 'Cuvinte',
@@ -37,6 +39,7 @@ const STRINGS = {
     signOut: 'Sign out',
     feedback: 'Send feedback',
     debugToggle: 'Toggle Debug Console',
+    debugLog: 'Debug log',
     timeline: 'Story Timeline',
     historyAlt: 'History',
     words: 'Words',
@@ -54,12 +57,15 @@ export default function App() {
   const [audioVolume, setAudioVolume] = useState(0);
   const [debugMode, setDebugMode] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const usage = useUsage();
   const closeFeedback = useCallback(() => setFeedbackOpen(false), []);
   const [transcripts, setTranscripts] = useState<string[]>([]);
   const [currentWordCount, setCurrentWordCount] = useState(0);
   const [activeGenerations, setActiveGenerations] = useState<string[]>([]);
+  const [paintingGenerations, setPaintingGenerations] = useState<string[]>([]);
   const storyBibleRef = useRef<StoryBible | null>(null);
   const lastImageRef = useRef<string | null>(null);
+  const storyVersionRef = useRef(0);
   const [language, setLanguage] = useState<'ro-RO' | 'en-US'>(
     () => (localStorage.getItem('storyLang') === 'en-US' ? 'en-US' : 'ro-RO')
   );
@@ -70,7 +76,9 @@ export default function App() {
 
   // A newly generated image takes over the main view again
   useEffect(() => { setSelectedId(null); }, [illustrations[0]?.id]);
-  const transcriptsEndRef = useRef<HTMLDivElement>(null);
+  const transcriptsRef = useRef<HTMLDivElement>(null);
+  const followTranscriptsRef = useRef(true);
+  const holdingTranscriptsRef = useRef(false);
   const fullLogsRef = useRef<string[]>([]);
   
   const sttManagerRef = useRef<WebSpeechSTTManager | null>(null);
@@ -91,13 +99,19 @@ export default function App() {
       else setStatus(SessionStatus.IDLE);
     };
 
-    sttManagerRef.current.onTranscription = (text) => {
-      const logLine = `[${new Date().toLocaleTimeString()}] 🎤 ${text}`;
+    sttManagerRef.current.onTranscription = (text, resultId, isFinal) => {
+      const logLine = `[${new Date().toLocaleTimeString()}] 🎤 ${isFinal ? '' : '[interim] '}${text}`;
       fullLogsRef.current.push(logLine);
-      setTranscripts(prev => [...prev.slice(-49), logLine]);
+      setTranscripts(prev => [...prev, logLine]);
       
       // Add to buffer and trigger generation if threshold hit
-      bufferManagerRef.current?.addText(text);
+      bufferManagerRef.current?.addText(text, resultId, isFinal);
+    };
+    sttManagerRef.current.onRecognitionEnd = () => bufferManagerRef.current?.finishRecognition();
+    bufferManagerRef.current.onWarning = (message) => {
+      const logLine = `[${new Date().toLocaleTimeString()}] ⚠️ ${message}`;
+      fullLogsRef.current.push(logLine);
+      setTranscripts(prev => [...prev, logLine]);
     };
 
     sttManagerRef.current.onError = (err) => {
@@ -112,8 +126,12 @@ export default function App() {
     };
 
     bufferManagerRef.current.onGenerationRequest = (request) => {
+      const storyVersion = storyVersionRef.current;
       generationMapRef.current.set(request.id, request);
       setActiveGenerations(prev => [...prev, request.id]);
+      const stopPainting = () => {
+        setPaintingGenerations(prev => prev.filter(id => id !== request.id));
+      };
 
       const logLine = `📖 SOURCE: "${request.sourceText}..."`;
       fullLogsRef.current.push(`[${new Date().toLocaleTimeString()}] ${logLine}`);
@@ -130,10 +148,24 @@ export default function App() {
           const descLog = `📝 DESCRIPTION: "${request.sourceText}"`;
           fullLogsRef.current.push(`[${new Date().toLocaleTimeString()}] ${descLog}`);
           setTranscripts(prev => [...prev, descLog]);
+          const countLog = `📏 NARRATION FOR API REQUEST: ${request.sourceText.length} characters (limit ${MAX_NARRATION_CHARS}; before validation)`;
+          fullLogsRef.current.push(`[${new Date().toLocaleTimeString()}] ${countLog}`);
+          setTranscripts(prev => [...prev, countLog]);
 
           // Step 2: Generate with the persistent story bible + previous picture for consistency
           const prevImage = lastImageRef.current ? await downscaleImage(lastImageRef.current) : null;
-          const result = await generateImageViaApi(request.sourceText, storyBibleRef.current, prevImage);
+          if (storyVersion !== storyVersionRef.current) return;
+          const result = await generateImageViaApi(request.sourceText, storyBibleRef.current, prevImage, (counts) => {
+            if (storyVersion !== storyVersionRef.current) return;
+            if (counts) {
+              const modelLog = `📏 MODEL TEXT PROMPTS: story ${counts.storyPromptChars} characters; image ${counts.imagePromptChars} characters (per attempt; reference image excluded)`;
+              fullLogsRef.current.push(`[${new Date().toLocaleTimeString()}] ${modelLog}`);
+              setTranscripts(prev => [...prev, modelLog]);
+            }
+            setPaintingGenerations(prev => [...prev, request.id]);
+          });
+          if (storyVersion !== storyVersionRef.current) return;
+          stopPainting();
           const imageUrl = result.image;
           storyBibleRef.current = result.storyBible;
           lastImageRef.current = imageUrl;
@@ -150,6 +182,7 @@ export default function App() {
           fullLogsRef.current.push(`[${new Date().toLocaleTimeString()}] ✅ Image generated`);
           bufferManagerRef.current?.completeGeneration(request.id);
         } catch (e) {
+          if (storyVersion !== storyVersionRef.current) return;
           console.error("Generation failed:", e);
           const errorLog = e instanceof QuotaExceededError
             ? `🚫 Image limit reached. You have used all your images.`
@@ -158,6 +191,7 @@ export default function App() {
           setTranscripts(prev => [...prev, errorLog]);
           bufferManagerRef.current?.failGeneration(request.id);
         } finally {
+          stopPainting();
           setActiveGenerations(prev => prev.filter(id => id !== request.id));
         }
       })();
@@ -176,10 +210,14 @@ export default function App() {
   }, [language, inSession]);
 
   const startNewStory = () => {
+    storyVersionRef.current++;
+    bufferManagerRef.current?.reset();
     storyBibleRef.current = null;
     lastImageRef.current = null;
     setIllustrations([]);
     setSelectedId(null);
+    setActiveGenerations([]);
+    setPaintingGenerations([]);
   };
 
   // Reading time: heartbeat every 30s while listening and the tab is visible
@@ -192,20 +230,37 @@ export default function App() {
     return () => { clearInterval(id); track('listening_stop'); };
   }, [status]);
 
-  // Auto-scroll transcripts
   useEffect(() => {
-    if (transcriptsEndRef.current) {
-      transcriptsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    const container = transcriptsRef.current;
+    if (container && followTranscriptsRef.current && !holdingTranscriptsRef.current) {
+      container.scrollTop = container.scrollHeight;
     }
-  }, [transcripts]);
+  }, [transcripts, debugMode]);
+
+  useEffect(() => {
+    const release = () => {
+      if (!holdingTranscriptsRef.current) return;
+      holdingTranscriptsRef.current = false;
+      const container = transcriptsRef.current;
+      if (container) {
+        followTranscriptsRef.current = container.scrollHeight - container.scrollTop - container.clientHeight <= 2;
+      }
+    };
+    window.addEventListener('pointerup', release);
+    window.addEventListener('pointercancel', release);
+    window.addEventListener('blur', release);
+    return () => {
+      window.removeEventListener('pointerup', release);
+      window.removeEventListener('pointercancel', release);
+      window.removeEventListener('blur', release);
+    };
+  }, []);
 
   const toggleListening = useCallback(async () => {
     if (status === SessionStatus.IDLE || status === SessionStatus.ERROR) {
       setTranscripts([]);
-      setCurrentWordCount(0);
-      setActiveGenerations([]);
+      followTranscriptsRef.current = true;
       fullLogsRef.current = [];
-      bufferManagerRef.current?.reset();
       fullLogsRef.current.push(`--- Session Started at ${new Date().toLocaleString()} ---`);
       await sttManagerRef.current?.start();
     } else {
@@ -228,7 +283,7 @@ export default function App() {
     <div className="min-h-screen bg-magic-50 text-gray-800 font-sans selection:bg-magic-200 flex flex-col">
       {/* Header */}
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-magic-100 shadow-sm transition-all duration-300">
-        <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div className="max-w-4xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-y-3">
           <div className="flex items-center gap-3">
             <div className="bg-magic-100 p-2 rounded-xl text-magic-600">
               <BookOpen size={24} strokeWidth={2.5} />
@@ -241,7 +296,7 @@ export default function App() {
             </div>
           </div>
           
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             {/* Language slider (locked during a session) */}
             <button
               type="button"
@@ -278,10 +333,12 @@ export default function App() {
               </div>
             )}
             
-            {/* Parallel Generation Indicator */}
-            {activeGenerations.length > 0 && (
-              <div className="text-xs font-bold text-magic-600 bg-magic-100 px-2 py-1 rounded-full">
-                {activeGenerations.length} 🎨
+            {(
+              <div
+                className={`text-xs font-bold px-2 py-1 rounded-full ${usage && usage.used >= usage.quota ? 'bg-red-100 text-red-600' : 'bg-magic-100 text-magic-600'}`}
+                title={language === 'ro-RO' ? 'Imagini folosite' : 'Images used'}
+              >
+                🖼️ {usage ? usage.used : '–'}/{usage ? usage.quota : 200}
               </div>
             )}
 
@@ -327,25 +384,27 @@ export default function App() {
         <div className="w-full mb-8 relative z-10">
           <BookViewer 
             currentIllustration={displayed} 
-            isGenerating={activeGenerations.length > 0} 
+            isGenerating={paintingGenerations.length > 0}
             language={language}
-            inSession={inSession}
+            inSession={inSession || activeGenerations.length > 0}
           />
         </div>
 
-        {illustrations.length > 1 && (
+        {illustrations.length > 0 && (
           <div className="animate-fade-in">
             <div className="flex items-center gap-2 mb-4 text-gray-400 uppercase tracking-widest text-xs font-bold">
               <Clock size={12} />
               <span>{t.timeline}</span>
             </div>
-            <div className="flex gap-4 overflow-x-auto pb-4 px-2 snap-x scrollbar-hide">
-              {illustrations.filter(ill => ill.id !== displayed?.id).map((ill) => (
+            <div role="region" aria-label={t.timeline} tabIndex={0} className="story-timeline flex gap-4 overflow-x-auto pb-4 px-2 snap-x">
+              {illustrations.map((ill, index) => (
                 <button
                   key={ill.id}
                   type="button"
                   onClick={() => setSelectedId(ill.id)}
-                  className="flex-shrink-0 w-24 h-24 md:w-32 md:h-32 rounded-lg overflow-hidden border-2 border-white shadow-md opacity-60 hover:opacity-100 transition-opacity snap-start cursor-pointer"
+                  aria-label={`${t.historyAlt} ${illustrations.length - index}`}
+                  aria-pressed={ill.id === displayed?.id}
+                  className={`flex-shrink-0 w-24 h-24 md:w-32 md:h-32 rounded-lg overflow-hidden border-2 shadow-md transition-opacity snap-start cursor-pointer ${ill.id === displayed?.id ? 'border-magic-500 opacity-100' : 'border-white opacity-60 hover:opacity-100'}`}
                 >
                   <img src={ill.url} alt={t.historyAlt} className="w-full h-full object-cover" />
                 </button>
@@ -377,7 +436,18 @@ export default function App() {
               </button>
             </div>
           </div>
-          <div className="p-3 h-48 overflow-y-auto space-y-2">
+          <div
+            ref={transcriptsRef}
+            role="region"
+            aria-label={t.debugLog}
+            tabIndex={0}
+            className="p-3 h-48 overflow-y-auto space-y-2"
+            onPointerDownCapture={() => { holdingTranscriptsRef.current = true; }}
+            onScroll={event => {
+              const container = event.currentTarget;
+              followTranscriptsRef.current = container.scrollHeight - container.scrollTop - container.clientHeight <= 2;
+            }}
+          >
             {transcripts.length === 0 && <p className="text-gray-500 italic">{t.waiting}</p>}
             {transcripts.map((t, i) => (
               <div key={i} className="break-words border-b border-gray-800 pb-1 last:border-0">
@@ -385,7 +455,6 @@ export default function App() {
                 {t}
               </div>
             ))}
-            <div ref={transcriptsEndRef} />
           </div>
         </div>
       )}

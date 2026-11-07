@@ -5,14 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Povești Magice</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@300;400;500;600;700&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600;700&display=swap&subset=latin-ext" rel="stylesheet">
     <script>
       tailwind.config = {
         theme: {
           extend: {
             fontFamily: {
-              sans: ['Nunito', 'sans-serif'],
-              display: ['Fredoka', 'sans-serif'],
+              sans: ['Lora', 'serif'],
+              display: ['Lora', 'serif'],
             },
             colors: {
               magic: {
@@ -43,14 +43,20 @@
         from { opacity: 0; transform: translateY(10px); }
         to { opacity: 1; transform: translateY(0); }
       }
-      /* Hide scrollbar for Chrome, Safari and Opera */
-      .scrollbar-hide::-webkit-scrollbar {
-          display: none;
+      .story-timeline {
+        scrollbar-width: thin;
+        scrollbar-color: #c026d3 #fae8ff;
       }
-      /* Hide scrollbar for IE, Edge and Firefox */
-      .scrollbar-hide {
-          -ms-overflow-style: none;  /* IE and Edge */
-          scrollbar-width: none;  /* Firefox */
+      .story-timeline::-webkit-scrollbar {
+        height: 8px;
+      }
+      .story-timeline::-webkit-scrollbar-track {
+        background: #fae8ff;
+        border-radius: 9999px;
+      }
+      .story-timeline::-webkit-scrollbar-thumb {
+        background: #c026d3;
+        border-radius: 9999px;
       }
     </style>
   <script type="importmap">

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase } from './supabase';
+import { readImageStream, type ModelPromptCounts } from './imageStream';
 
 export interface Usage { used: number; quota: number }
 
@@ -17,22 +18,23 @@ export function useUsage() {
   return u;
 }
 
-export async function authFetch(path: string, body?: unknown, signal?: AbortSignal): Promise<Response> {
+export async function authFetch(path: string, body?: unknown, signal?: AbortSignal, accept?: string): Promise<Response> {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
   return fetch(path, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token ?? ''}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token ?? ''}`, ...(accept ? { Accept: accept } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal,
   });
 }
 
-export async function refreshUsage() {
+export async function refreshUsage(retries = 3) {
   try {
     const res = await authFetch('/api/me');
-    if (res.ok) setUsage(await res.json());
-  } catch { /* offline: keep the last known value */ }
+    if (res.ok) return setUsage(await res.json());
+  } catch { /* fall through to retry */ }
+  if (retries > 0) setTimeout(() => refreshUsage(retries - 1), 2000);
 }
 
 export interface StoryBible {
@@ -62,18 +64,31 @@ export function downscaleImage(dataUrl: string, maxSide = 512): Promise<string |
 export async function generateImageViaApi(
   description: string,
   storyBible: StoryBible | null,
-  previousImage: string | null
+  previousImage: string | null,
+  onImageStarted: (counts?: ModelPromptCounts) => void,
 ): Promise<{ image: string; storyBible: StoryBible }> {
-  const res = await authFetch('/api/generate-image', { description, storyBible, previousImage }, AbortSignal.timeout(90_000))
-    .catch(e => { throw e?.name === 'TimeoutError' ? new Error('Image generation timed out') : e; });
-  const json = await res.json().catch(() => ({}));
-  if (res.status === 429) {
+  // The server reserves the credit when the request starts, so count it immediately.
+  if (usage) setUsage({ ...usage, used: Math.min(usage.used + 1, usage.quota) });
+  try {
+    const res = await authFetch('/api/generate-image', { description, storyBible, previousImage }, AbortSignal.timeout(90_000), 'application/x-ndjson');
+    if (res.ok && res.headers.get('content-type')?.includes('application/x-ndjson')) {
+      if (!res.body) throw new Error('Image generation response has no body');
+      const result = await readImageStream(res.body, onImageStarted);
+      setUsage({ used: result.used, quota: result.quota });
+      return { image: result.image, storyBible: result.storyBible };
+    }
+    const json = await res.json();
+    if (res.status === 429) {
+      setUsage({ used: json.used, quota: json.quota });
+      throw new QuotaExceededError();
+    }
+    if (!res.ok) throw new Error(json.error || 'Image generation failed');
     setUsage({ used: json.used, quota: json.quota });
-    throw new QuotaExceededError();
+    return { image: json.image, storyBible: json.storyBible };
+  } catch (e) {
+    if (!(e instanceof QuotaExceededError)) refreshUsage();
+    throw e instanceof Error && e.name === 'TimeoutError' ? new Error('Image generation timed out') : e;
   }
-  if (!res.ok) throw new Error(json.error || 'Image generation failed');
-  setUsage({ used: json.used, quota: json.quota });
-  return { image: json.image, storyBible: json.storyBible };
 }
 
 export function track(type: string, meta?: Record<string, unknown>) {

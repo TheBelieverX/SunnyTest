@@ -19,9 +19,11 @@ export class WebSpeechSTTManager {
   private lastSpeechTime = 0;
   private readonly SILENCE_THRESHOLD = 6000; // 6 seconds of silence to stop
   private shouldRestart = false;
+  private recognitionRun = 0;
 
   public onStatusChange: ((status: 'idle' | 'listening' | 'connecting' | 'error') => void) | null = null;
-  public onTranscription: ((text: string) => void) | null = null;
+  public onTranscription: ((text: string, resultId: string, isFinal: boolean) => void) | null = null;
+  public onRecognitionEnd: (() => void) | null = null;
   public onError: ((error: Error) => void) | null = null;
 
   constructor(lang: string = 'ro-RO') {
@@ -49,6 +51,7 @@ export class WebSpeechSTTManager {
     this.recognition.maxAlternatives = 1;
 
     this.recognition.onstart = () => {
+      this.recognitionRun++;
       this.isListening = true;
       this.onStatusChange?.('listening');
       console.log('Speech recognition started');
@@ -62,11 +65,11 @@ export class WebSpeechSTTManager {
         if (event.results[i].isFinal) {
           // Final result - emit it
           console.log('Final transcript:', transcript, `(${wordCount} words)`);
-          this.onTranscription?.(transcript);
+          this.onTranscription?.(transcript, `${this.recognitionRun}:${i}`, true);
         } else {
           // Interim result - emit to UI with [interim] prefix for real-time feedback
           console.log('Interim transcript:', transcript, `(${wordCount} words)`);
-          this.onTranscription?.(`[interim] ${transcript}`);
+          this.onTranscription?.(transcript, `${this.recognitionRun}:${i}`, false);
         }
       }
 
@@ -86,6 +89,7 @@ export class WebSpeechSTTManager {
     this.recognition.onend = () => {
       console.log('Speech recognition ended, shouldRestart:', this.shouldRestart);
       this.isListening = false;
+      this.onRecognitionEnd?.();
       
       // If the user hasn't manually stopped, restart recognition
       if (this.shouldRestart) {

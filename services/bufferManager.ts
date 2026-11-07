@@ -1,264 +1,180 @@
-/**
- * Buffer and Generation Queue Manager
- * Handles word counting, buffering, and parallel image generation with session context
- */
+import { MAX_NARRATION_CHARS } from '../generationLimits';
 
 export interface GenerationRequest {
   id: string;
   sourceText: string;
   timestamp: number;
   status: 'pending' | 'generating' | 'completed' | 'failed';
-  sessionContext?: string; // Session history for consistency
+  sessionContext?: string;
 }
 
+interface InterimResult {
+  text: string;
+  committedWords: string[];
+  boundaryWarned: boolean;
+}
+
+const words = (text: string) => text.trim().split(/\s+/).filter(Boolean);
+
 export class BufferManager {
-  private wordBuffer: string = ''; // Final results buffer
-  private interimBuffer: string = ''; // Current interim result (replaced each time, not accumulated)
-  private wordCount = 0;
-  private maxWordCount = 0; // Tracks maximum word count to filter out backwards jumps
-  private readonly WORD_THRESHOLD = 70;
+  private readonly wordThreshold = 70;
+  private readonly interimFallbackMs: number;
+  private wordBuffer = '';
+  private interim = new Map<string, InterimResult>();
+  private fallbackTimer: ReturnType<typeof setTimeout> | undefined;
   private generationQueue: GenerationRequest[] = [];
   private activeGenerations = new Set<string>();
-  private maxParallelGenerations = 1; // Sequential: each image uses the previous one as reference
-  
-  // Session context tracking for consistency
-  private sessionHistory: string[] = [];
-  private establishedAttributes: string[] = []; // Key attributes established in the story
-  
-  // Optimization: cache word count results to avoid recalculating
-  private cachedFinalWordCount = 0;
-  private cachedInterimWordCount = 0;
-  private lastFinalBuffer = '';
-  private lastInterimBuffer = '';
+  private nextId = 0;
 
   public onWordCountChange: ((count: number) => void) | null = null;
   public onGenerationRequest: ((request: GenerationRequest) => void) | null = null;
   public onGenerationComplete: ((id: string) => void) | null = null;
+  public onWarning: ((message: string) => void) | null = null;
 
-  /**
-   * Helper: Count words in text (cached for performance)
-   */
-  private countWords(text: string): number {
-    if (!text || text.trim().length === 0) return 0;
-    return text.trim().split(/\s+/).length;
+  constructor(interimFallbackMs = 2000) {
+    this.interimFallbackMs = interimFallbackMs;
   }
 
-  /**
-   * Add transcribed text and check if we've hit the threshold
-   * OPTIMIZED: Reduces redundant string operations and logging
-   */
-  addText(text: string) {
-    // Remove [interim] prefix if present
-    let cleanText = text.replace(/^\[interim\]\s*/, '');
-    
-    if (cleanText.trim().length === 0) return;
+  private unsentWords(result: InterimResult): string[] {
+    const current = words(result.text);
+    const previous = result.committedWords;
+    if (!previous.length) return current;
 
-    const isInterim = text.startsWith('[interim]');
-    
-    if (isInterim) {
-      // INTERIM: Replace the interim buffer (don't accumulate previous interims)
-      this.interimBuffer = cleanText;
+    // Anchor the previously emitted boundary to tolerate revisions before it.
+    const normalize = (word: string) => word.toLocaleLowerCase().replace(/[.,!?;:"“”„()]+/g, '');
+    const anchorLength = Math.min(5, previous.length);
+    const anchor = previous.slice(-anchorLength).map(normalize);
+    let best = -1;
+    let distance = Infinity;
+    for (let i = 0; i <= current.length - anchorLength; i++) {
+      if (anchor.every((word, j) => word === normalize(current[i + j]))) {
+        const boundary = i + anchorLength;
+        const delta = Math.abs(boundary - previous.length);
+        if (delta < distance) { best = boundary; distance = delta; }
+      }
+    }
+    if (best >= 0) {
+      result.boundaryWarned = false;
+      return current.slice(best);
+    }
+    if (!result.boundaryWarned) {
+      result.boundaryWarned = true;
+      this.onWarning?.('Speech revision changed the already-used passage; continuing from the previous word boundary.');
+    }
+    return current.slice(Math.min(previous.length, current.length));
+  }
+
+  addText(text: string, resultId: string, isFinal: boolean) {
+    const result = this.interim.get(resultId) ?? { text: '', committedWords: [], boundaryWarned: false };
+    result.text = text;
+    if (isFinal) {
+      this.appendWords(this.unsentWords(result));
+      this.interim.delete(resultId);
+      this.flushIfReady();
     } else {
-      // FINAL: Add to permanent buffer, clear interim buffer
-      this.wordBuffer += ' ' + cleanText;
-      this.interimBuffer = ''; // Clear interim when we get final result
+      this.interim.set(resultId, result);
     }
+    this.updateFallback();
+  }
 
-    // Only recount if buffers changed
-    let finalWords = this.cachedFinalWordCount;
-    let interimWords = this.cachedInterimWordCount;
-    
-    if (this.wordBuffer !== this.lastFinalBuffer) {
-      finalWords = this.countWords(this.wordBuffer);
-      this.cachedFinalWordCount = finalWords;
-      this.lastFinalBuffer = this.wordBuffer;
-    }
-    
-    if (this.interimBuffer !== this.lastInterimBuffer) {
-      interimWords = this.countWords(this.interimBuffer);
-      this.cachedInterimWordCount = interimWords;
-      this.lastInterimBuffer = this.interimBuffer;
-    }
-    
-    this.wordCount = finalWords + interimWords;
+  private appendWords(newWords: string[]) {
+    if (newWords.length) this.wordBuffer = [this.wordBuffer, ...newWords].filter(Boolean).join(' ');
+  }
 
-    // Update max counter: only goes up or stays the same, never backwards
-    if (this.wordCount > this.maxWordCount) {
-      this.maxWordCount = this.wordCount;
-    }
-
-    // Only notify UI if value changed (reduce React re-renders)
-    this.onWordCountChange?.(this.maxWordCount);
-
-    // Check if we've hit the threshold using the max counter
-    if (this.maxWordCount >= this.WORD_THRESHOLD) {
-      this.triggerGeneration();
+  private commitInterim() {
+    for (const result of this.interim.values()) {
+      this.appendWords(this.unsentWords(result));
+      result.committedWords = words(result.text);
     }
   }
 
-  /**
-   * Trigger image generation for accumulated text
-   */
-  private triggerGeneration() {
-    // Use everything heard so far, including the current interim words that were counted
-    const heard = (this.wordBuffer + ' ' + this.interimBuffer).trim();
-    if (heard.length === 0) return;
+  finishRecognition() {
+    this.clearFallback();
+    this.commitInterim();
+    this.interim.clear();
+    this.flushIfReady();
+    this.updateFallback();
+  }
 
-    // A slow generation must not build a backlog: merge into the pending request instead
-    const pending = this.generationQueue[this.generationQueue.length - 1];
-    if (pending) {
-      pending.sourceText = (pending.sourceText + ' ' + heard).trim();
-      this.sessionHistory.push(heard);
-      this.wordBuffer = '';
-      this.interimBuffer = '';
-      this.wordCount = 0;
-      this.maxWordCount = 0;
-      this.onWordCountChange?.(0);
-      return;
+  private updateFallback() {
+    const interimWords = Array.from(this.interim.values()).reduce((count, result) => count + this.unsentWords(result).length, 0);
+    const count = words(this.wordBuffer).length + interimWords;
+    this.onWordCountChange?.(count);
+    if (count < this.wordThreshold || interimWords === 0) {
+      this.clearFallback();
+    } else if (this.fallbackTimer === undefined) {
+      this.fallbackTimer = setTimeout(() => {
+        this.fallbackTimer = undefined;
+        this.commitInterim();
+        this.flushIfReady();
+        this.updateFallback();
+      }, this.interimFallbackMs);
     }
+  }
 
-    // Build session context from history
-    const sessionContext = this.buildSessionContext();
-    
-    const request: GenerationRequest = {
-      id: Date.now().toString(),
-      sourceText: heard,
-      timestamp: Date.now(),
-      status: 'pending',
-      sessionContext: sessionContext,
-    };
+  private clearFallback() {
+    if (this.fallbackTimer !== undefined) clearTimeout(this.fallbackTimer);
+    this.fallbackTimer = undefined;
+  }
 
-    // Add current text to session history for future context
-    this.sessionHistory.push(heard);
-    this.extractAttributes(heard);
-
-    this.generationQueue.push(request);
-    this.wordBuffer = ''; // Clear final buffer
-    this.interimBuffer = ''; // Clear interim buffer
-    this.wordCount = 0;
-    this.maxWordCount = 0; // Reset max counter for next batch
+  private flushIfReady() {
+    if (words(this.wordBuffer).length < this.wordThreshold && this.wordBuffer.length <= MAX_NARRATION_CHARS) return;
+    let remaining = this.wordBuffer.trim();
+    this.wordBuffer = '';
+    while (remaining) {
+      let end = Math.min(remaining.length, MAX_NARRATION_CHARS);
+      if (end < remaining.length) {
+        const boundary = remaining.lastIndexOf(' ', end);
+        if (boundary > 0) end = boundary;
+        else if (end > 0 && /[\uD800-\uDBFF]/.test(remaining[end - 1])) end--;
+      }
+      const chunk = remaining.slice(0, end);
+      remaining = remaining.slice(end).trimStart();
+      const pending = this.generationQueue[this.generationQueue.length - 1];
+      if (pending && pending.sourceText.length + 1 + chunk.length <= MAX_NARRATION_CHARS) {
+        pending.sourceText += ` ${chunk}`;
+      } else {
+        this.generationQueue.push({
+          id: `${Date.now()}-${++this.nextId}`,
+          sourceText: chunk,
+          timestamp: Date.now(),
+          status: 'pending',
+        });
+      }
+    }
     this.onWordCountChange?.(0);
-
-    // Process queue
     this.processQueue();
   }
 
-  /**
-   * Extract and track key attributes from the text for consistency
-   * OPTIMIZED: Only extract from final results, not interim (interim changes too frequently)
-   */
-  private extractAttributes(text: string) {
-    const lowerText = text.toLowerCase();
-    
-    // Optimized patterns - cache these as static
-    const attributePatterns = [
-      /(\w+)\s+(hair|păr)/gi,
-      /(\w+)\s+(eyes|ochi)/gi,
-      /(\w+)\s+(dress|rochie|robe)/gi,
-      /(\w+)\s+(cloak|cape|manta)/gi,
-      /prince|princess|king|queen|regina|prinț|prințesă/gi,
-      /castle|fort|tower|palace|palat|castel/gi,
-      /forest|woods|copac|pădure/gi,
-      /magical|magic|enchanted|vrăji/gi,
-    ];
-
-    // Only process if we don't already have many attributes (avoid re-extracting)
-    if (this.establishedAttributes.length > 50) return;
-
-    for (const pattern of attributePatterns) {
-      const matches = text.match(pattern);
-      if (matches) {
-        for (const match of matches) {
-          if (!this.establishedAttributes.includes(match)) {
-            this.establishedAttributes.push(match);
-          }
-        }
-      }
-    }
-  }
-
-  /**
-   * Build session context string from history
-   */
-  private buildSessionContext(): string {
-    if (this.sessionHistory.length === 0) {
-      return '';
-    }
-
-    // Combine recent history and established attributes
-    const recentHistory = this.sessionHistory.slice(-3).join(' '); // Last 3 pieces of text
-    const attributes = this.establishedAttributes.slice(-10).join(', '); // Last 10 attributes
-    
-    return `
-STORY CONTEXT FROM THIS SESSION:
-${recentHistory}
-
-ESTABLISHED CHARACTER/SETTING DETAILS (maintain consistency):
-${attributes}
-    `.trim();
-  }
-
-  /**
-   * Process generation queue with parallel limit
-   */
   private processQueue() {
-    while (
-      this.generationQueue.length > 0 &&
-      this.activeGenerations.size < this.maxParallelGenerations
-    ) {
-      const request = this.generationQueue.shift();
-      if (request) {
-        request.status = 'generating';
-        this.activeGenerations.add(request.id);
-        this.onGenerationRequest?.(request);
-      }
-    }
+    if (this.activeGenerations.size || !this.generationQueue.length) return;
+    const request = this.generationQueue.shift()!;
+    request.status = 'generating';
+    this.activeGenerations.add(request.id);
+    this.onGenerationRequest?.(request);
   }
 
-  /**
-   * Mark generation as complete and process next in queue
-   */
   completeGeneration(id: string) {
     this.activeGenerations.delete(id);
     this.onGenerationComplete?.(id);
-    this.processQueue(); // Process next item if available
+    this.processQueue();
   }
 
-  /**
-   * Mark generation as failed and continue with queue
-   */
   failGeneration(id: string) {
     this.activeGenerations.delete(id);
-    this.processQueue(); // Process next item
+    this.processQueue();
   }
 
-  /**
-   * Get current queue status
-   */
   getQueueStatus() {
-    return {
-      queued: this.generationQueue.length,
-      active: this.activeGenerations.size,
-      wordCount: this.wordCount,
-    };
+    return { queued: this.generationQueue.length, active: this.activeGenerations.size, wordCount: words(this.wordBuffer).length };
   }
 
-  /**
-   * Reset buffer and queue
-   */
   reset() {
+    this.clearFallback();
     this.wordBuffer = '';
-    this.interimBuffer = '';
-    this.wordCount = 0;
-    this.maxWordCount = 0;
-    this.cachedFinalWordCount = 0;
-    this.cachedInterimWordCount = 0;
-    this.lastFinalBuffer = '';
-    this.lastInterimBuffer = '';
+    this.interim.clear();
     this.generationQueue = [];
     this.activeGenerations.clear();
-    this.sessionHistory = [];
-    this.establishedAttributes = [];
     this.onWordCountChange?.(0);
   }
 }

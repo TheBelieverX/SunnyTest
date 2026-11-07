@@ -1,0 +1,14 @@
+.git
+.vercel
+node_modules
+dist
+dist-ssr
+test-results
+playwright-report
+.agents
+.vscode
+.idea
+.env*
+!.env.example
+*.local
+*.log

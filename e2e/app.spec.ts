@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 
 // Supabase and the paid image API are stubbed, so these tests need no credentials,
 // cost nothing, and run identically on localhost and production.
@@ -52,6 +53,7 @@ async function signIn(page: Page) {
 async function installFakeSpeech(page: Page) {
   await page.addInitScript(() => {
     class FakeRecognition {
+      resultIndex = 0;
       lang = '';
       continuous = false;
       interimResults = false;
@@ -65,7 +67,18 @@ async function installFakeSpeech(page: Page) {
     (window as any).__say = (text: string) => {
       const result: any = [{ transcript: text }];
       result.isFinal = true;
-      (window as any).__rec.onresult({ resultIndex: 0, results: [result] });
+      const rec = (window as any).__rec;
+      const index = rec.resultIndex++;
+      const results = Array(index).fill(null).concat([result]);
+      rec.onresult({ resultIndex: index, results });
+    };
+    (window as any).__revise = (text: string, isFinal: boolean) => {
+      const rec = (window as any).__rec;
+      const result: any = [{ transcript: text }];
+      result.isFinal = isFinal;
+      const index = rec.resultIndex;
+      rec.onresult({ resultIndex: index, results: Array(index).fill(null).concat([result]) });
+      if (isFinal) rec.resultIndex++;
     };
   });
 }
@@ -265,6 +278,8 @@ test('runtime: a spoken story produces an illustration with no console or page e
 
   await installFakeSpeech(page);
   await signIn(page);
+  const modelLabel = page.getByText('Model imagini: gemini-3.1-flash-lite-image');
+  await expect(modelLabel).toBeVisible();
 
   await page.getByRole('button', { name: 'Începe Citirea' }).click();
   await expect(page.getByRole('button', { name: 'Pauză' })).toBeVisible();
@@ -274,11 +289,235 @@ test('runtime: a spoken story produces an illustration with no console or page e
   await page.evaluate(() => (window as any).__say(Array(75).fill('unicorn').join(' ')));
   await request;
   await expect(page.getByRole('img', { name: /Scena (curentă|următoare)|(Current|Next) Scene/ })).toBeVisible({ timeout: 10_000 });
+  await expect(modelLabel).toBeVisible();
 
   await page.getByRole('button', { name: 'Pauză' }).click();
   await expect(page.getByRole('button', { name: 'Începe Citirea' })).toBeVisible();
 
   expect(errors).toEqual([]);
+});
+
+test('speech revisions: debug log shows deduplicated and bounded narration', async ({ page }) => {
+  await installFakeSpeech(page);
+  await signIn(page);
+  const requests: string[] = [];
+  await page.route('**/api/generate-image', async route => {
+    requests.push(route.request().postDataJSON().description);
+    await route.fulfill({ json: {
+      image: TINY_PNG,
+      storyBible: { characters: [], setting: '', style: '', summary: '' },
+      used: requests.length, quota: 200,
+    } });
+  });
+  await page.getByRole('button', { name: 'Începe Citirea' }).click();
+  await page.evaluate(() => (window as any).__revise(Array.from({ length: 70 }, (_, i) => `word${i}`).join(' '), false));
+  await page.waitForTimeout(500);
+  expect(requests).toHaveLength(0);
+  await expect.poll(() => requests.length, { timeout: 5000 }).toBe(1);
+  await page.evaluate(() => {
+    for (let count = 71; count <= 145; count++) {
+      (window as any).__revise(Array.from({ length: count }, (_, i) => `word${i}`).join(' '), false);
+    }
+    (window as any).__revise(Array.from({ length: 145 }, (_, i) => `word${i}`).join(' '), true);
+  });
+  await expect.poll(() => requests.length).toBe(2);
+  const allWords = requests.join(' ').split(/\s+/);
+  expect(allWords).toEqual(Array.from({ length: 145 }, (_, i) => `word${i}`));
+  expect(requests.every(value => value.length <= 4000)).toBe(true);
+
+  await page.getByTitle('Arată/ascunde consola de depanare').click();
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByTitle('Descarcă jurnalul complet').click();
+  const download = await downloadPromise;
+  const log = await readFile(await download.path(), 'utf8');
+  const counts = [...log.matchAll(/NARRATION FOR API REQUEST: (\d+) characters/g)].map(match => Number(match[1]));
+  expect(counts).toEqual(requests.map(value => value.length));
+  expect(log).not.toContain('GENERATION FAILED: Invalid description');
+  console.log(`Speech replay debug log: ${counts.length} requests, narration lengths ${counts.join(', ')}, ${allWords.length} distinct sequential words, no invalid-description errors.`);
+});
+
+test('speech buffering: pausing and resuming preserves unfinished narration', async ({ page }) => {
+  await installFakeSpeech(page);
+  await signIn(page);
+  let description = '';
+  await page.route('**/api/generate-image', async route => {
+    description = route.request().postDataJSON().description;
+    await route.fulfill({ json: {
+      image: TINY_PNG,
+      storyBible: { characters: [], setting: '', style: '', summary: '' },
+      used: 1, quota: 200,
+    } });
+  });
+  await page.getByRole('button', { name: 'Începe Citirea' }).click();
+  await page.evaluate(() => (window as any).__revise(Array.from({ length: 40 }, (_, i) => `word${i}`).join(' '), false));
+  await page.getByRole('button', { name: 'Pauză' }).click();
+  await expect(page.getByRole('button', { name: 'Începe Citirea' })).toBeVisible();
+  await page.getByRole('button', { name: 'Începe Citirea' }).click();
+  await page.evaluate(() => (window as any).__say(Array.from({ length: 30 }, (_, i) => `word${i + 40}`).join(' ')));
+  await expect.poll(() => description.length).toBeGreaterThan(0);
+  expect(description).toBe(Array.from({ length: 70 }, (_, i) => `word${i}`).join(' '));
+});
+
+test('debug log: manual scrolling and holding the mouse pause following new entries', async ({ page }) => {
+  await installFakeSpeech(page);
+  await signIn(page);
+  await page.getByTitle('Arată/ascunde consola de depanare').click();
+  await page.getByRole('button', { name: 'Începe Citirea' }).click();
+  const log = page.getByRole('region', { name: 'Jurnal de depanare' });
+  await page.evaluate(() => {
+    for (let i = 0; i < 40; i++) (window as any).__say(`entry${i}`);
+  });
+  await expect(log.getByText('entry39', { exact: false })).toBeVisible();
+  await expect.poll(() => log.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThanOrEqual(2);
+  await log.evaluate(el => { el.scrollTop = 0; });
+  await expect.poll(() => log.evaluate(el => el.scrollTop)).toBe(0);
+  const box = (await log.boundingBox())!;
+  await page.mouse.move(box.x + 30, box.y + 30);
+  await page.mouse.down();
+  await page.evaluate(() => {
+    for (let i = 40; i < 60; i++) (window as any).__say(`entry${i}`);
+  });
+  await expect(log.getByText('entry59', { exact: false })).toHaveCount(1);
+  expect(await log.evaluate(el => el.scrollTop)).toBe(0);
+  await expect(log.getByText('entry0', { exact: false })).toBeVisible();
+  await page.mouse.up();
+  await page.evaluate(() => (window as any).__say('entry60'));
+  await expect(log.getByText('entry60', { exact: false })).toHaveCount(1);
+  expect(await log.evaluate(el => el.scrollTop)).toBe(0);
+  await log.evaluate(el => { el.scrollTop = el.scrollHeight; });
+  await expect.poll(() => log.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThanOrEqual(2);
+  await page.evaluate(() => (window as any).__say('entry61'));
+  await expect(log.getByText('entry61', { exact: false })).toBeVisible();
+  await expect.poll(() => log.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThanOrEqual(2);
+});
+
+test('history: selecting an illustration does not change its brightness after the transition', async ({ page }) => {
+  await installFakeSpeech(page);
+  await signIn(page);
+  let generated = 0;
+  await page.route('**/api/generate-image', route => {
+    const color = generated++ === 0 ? '#367db1' : '#c98745';
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="${color}"/></svg>`;
+    return route.fulfill({ json: {
+      image: `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`,
+      storyBible: { characters: [], setting: '', style: '', summary: '' },
+      used: generated, quota: 200,
+    } });
+  });
+  await page.getByRole('button', { name: 'Începe Citirea' }).click();
+  await page.evaluate(() => (window as any).__say(Array(75).fill('fox').join(' ')));
+  await expect(page.getByRole('img', { name: 'Scena curentă' })).toBeVisible();
+  await page.evaluate(() => (window as any).__say(Array(75).fill('castle').join(' ')));
+  const historyImage = page.getByRole('button', { name: 'Istoric 1', exact: true });
+  await expect(historyImage).toBeVisible();
+  await page.waitForTimeout(1400);
+  await historyImage.click();
+  const nextImage = page.getByRole('img', { name: 'Scena următoare' });
+  await expect(nextImage).toBeVisible();
+  await nextImage.scrollIntoViewIfNeeded();
+  const box = (await nextImage.boundingBox())!;
+  const pixel = async () => {
+    const png = await page.screenshot({ clip: { x: Math.floor(box.x + box.width / 4), y: Math.floor(box.y + box.height / 3), width: 1, height: 1 } });
+    return page.evaluate(async base64 => {
+      const img = new Image();
+      img.src = `data:image/png;base64,${base64}`;
+      await img.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 1;
+      const context = canvas.getContext('2d')!;
+      context.drawImage(img, 0, 0);
+      return Array.from(context.getImageData(0, 0, 1, 1).data);
+    }, png.toString('base64'));
+  };
+  const during = await pixel();
+  await expect(nextImage).toHaveCount(0);
+  const after = await pixel();
+  expect(after).toEqual(during);
+});
+
+test('history: every illustration remains selectable in a scrollable current-story timeline', async ({ page }) => {
+  await page.setViewportSize({ width: 600, height: 900 });
+  await installFakeSpeech(page);
+  await signIn(page);
+  await page.getByRole('button', { name: 'Începe Citirea' }).click();
+  for (let count = 1; count <= 7; count++) {
+    await page.evaluate(() => (window as any).__say(Array(75).fill('fox').join(' ')));
+    await expect(page.getByRole('region', { name: 'Istoricul Poveștii' }).getByRole('button')).toHaveCount(count);
+  }
+  const timeline = page.getByRole('region', { name: 'Istoricul Poveștii' });
+  expect(await timeline.evaluate(el => el.scrollWidth > el.clientWidth)).toBe(true);
+  await expect(page.getByRole('button', { name: 'Istoric 7', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => timeline.evaluate(el => getComputedStyle(el).scrollbarWidth)).not.toBe('none');
+
+  await page.getByRole('button', { name: 'Istoric 1', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Istoric 1', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(timeline.getByRole('button')).toHaveCount(7);
+  await page.getByRole('button', { name: 'Istoric 7', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Istoric 7', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('img', { name: 'Scena următoare' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Pauză' }).click();
+  await page.getByRole('button', { name: 'Poveste nouă' }).click();
+  await expect(timeline).toHaveCount(0);
+  await expect(page.getByRole('img', { name: 'Scena curentă' })).toHaveCount(0);
+});
+
+test('painting indicator starts immediately with image generation and stops on completion or failure', async ({ page }) => {
+  await page.addInitScript(() => {
+    const originalFetch = window.fetch.bind(window);
+    (window as any).__imageStreams = [];
+    window.fetch = (input, init) => {
+      if (typeof input !== 'string' || input !== '/api/generate-image') return originalFetch(input, init);
+      return Promise.resolve(new Response(new ReadableStream({
+        start(controller) { (window as any).__imageStreams.push(controller); },
+      }), { headers: { 'Content-Type': 'application/x-ndjson' } }));
+    };
+    (window as any).__imageEvent = (index: number, event: object, close = false) => {
+      const controller = (window as any).__imageStreams[index];
+      controller.enqueue(new TextEncoder().encode(JSON.stringify(event) + '\n'));
+      if (close) controller.close();
+    };
+  });
+  await installFakeSpeech(page);
+  await signIn(page);
+  await page.getByRole('button', { name: 'Începe Citirea' }).click();
+  await expect(page.getByRole('button', { name: 'Pauză' })).toBeVisible();
+  const paint = page.getByText('Se pictează...', { exact: true });
+  const result = {
+    type: 'result', image: TINY_PNG,
+    storyBible: { characters: [], setting: '', style: '', summary: '' }, used: 1, quota: 200,
+  };
+
+  await page.evaluate(() => (window as any).__say(Array(75).fill('unicorn').join(' ')));
+  await page.waitForFunction(() => (window as any).__imageStreams.length === 1);
+  await expect(paint).toHaveCount(0);
+  await page.getByTitle('Arată/ascunde consola de depanare').click();
+  await expect(page.getByText('📏 NARRATION FOR API REQUEST: 599 characters (limit 4000; before validation)')).toBeVisible();
+  await page.evaluate(() => (window as any).__imageEvent(0, { type: 'image_started', storyPromptChars: 1234, imagePromptChars: 567 }));
+  await expect(paint).toBeVisible({ timeout: 1000 });
+  await expect(page.getByText('📏 MODEL TEXT PROMPTS: story 1234 characters; image 567 characters (per attempt; reference image excluded)')).toBeVisible();
+  await page.evaluate(result => (window as any).__imageEvent(0, result, true), result);
+  await expect(page.getByRole('img', { name: 'Scena curentă' })).toBeVisible();
+  await expect(paint).toHaveCount(0);
+
+  await page.evaluate(() => (window as any).__say(Array(75).fill('castle').join(' ')));
+  await page.waitForFunction(() => (window as any).__imageStreams.length === 2);
+  await expect(paint).toHaveCount(0);
+  await page.evaluate(() => (window as any).__imageEvent(1, { type: 'image_started' }));
+  await expect(paint).toBeVisible({ timeout: 1000 });
+  await expect(page.locator('header').getByText(/🎨/)).toHaveCount(0);
+  await expect(page.locator('header').getByTitle('Imagini folosite')).toBeVisible();
+  await page.evaluate(result => (window as any).__imageEvent(1, result, true), result);
+  await expect(paint).toHaveCount(0);
+  await expect(page.getByRole('img', { name: 'Scena următoare' })).toBeVisible();
+
+  await page.evaluate(() => (window as any).__say(Array(75).fill('forest').join(' ')));
+  await page.waitForFunction(() => (window as any).__imageStreams.length === 3);
+  await expect(page.getByRole('img', { name: 'Scena curentă' })).toBeVisible();
+  await page.evaluate(() => (window as any).__imageEvent(2, { type: 'image_started' }));
+  await expect(paint).toBeVisible({ timeout: 2000 });
+  await page.evaluate(() => (window as any).__imageEvent(2, { type: 'error', error: 'Test failure' }, true));
+  await expect(paint).toHaveCount(0);
 });
 
 test('demo: the intro shows a parent reading aloud next to a screen, in both languages', async ({ page }) => {
@@ -291,6 +530,7 @@ test('demo: the intro shows a parent reading aloud next to a screen, in both lan
   await expect(page.getByText('4. Povestea continuă')).toBeVisible();
 
   await page.getByRole('switch').click();
+  await expect(page.getByText('Image model: gemini-3.1-flash-lite-image')).toBeVisible();
   await expect(page.getByRole('img', { name: /dad reads aloud/ })).toBeVisible();
   await expect(page.getByText('Read a book aloud, next to a screen.')).toBeVisible();
   await expect(page.getByText('1. Setup')).toBeVisible();
