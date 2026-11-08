@@ -21,9 +21,8 @@ View your app in AI Studio: https://ai.studio/apps/drive/15ULsIQi1o_8MtGRESB4-cB
 
 ## Image generation latency
 
-Illustrations use `gemini-3.1-flash-lite-image`; the configured image model is
-shown in the corner of the viewer, including during the demo. The separate
-story-bible text step uses `gemini-3.5-flash-lite`.
+Illustrations use `gemini-3.1-flash-lite-image`. The separate story-bible text
+step uses `gemini-3.5-flash-lite`.
 
 The timeline shows all illustrations in the current story, including the
 selected picture. It scrolls horizontally when needed. Pictures are kept in

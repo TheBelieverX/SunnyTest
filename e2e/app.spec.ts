@@ -278,8 +278,7 @@ test('runtime: a spoken story produces an illustration with no console or page e
 
   await installFakeSpeech(page);
   await signIn(page);
-  const modelLabel = page.getByText('Model imagini: gemini-3.1-flash-lite-image');
-  await expect(modelLabel).toBeVisible();
+  await expect(page.getByText('gemini-3.1-flash-lite-image')).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Începe Citirea' }).click();
   await expect(page.getByRole('button', { name: 'Pauză' })).toBeVisible();
@@ -289,7 +288,7 @@ test('runtime: a spoken story produces an illustration with no console or page e
   await page.evaluate(() => (window as any).__say(Array(75).fill('unicorn').join(' ')));
   await request;
   await expect(page.getByRole('img', { name: /Scena (curentă|următoare)|(Current|Next) Scene/ })).toBeVisible({ timeout: 10_000 });
-  await expect(modelLabel).toBeVisible();
+  await expect(page.getByText('gemini-3.1-flash-lite-image')).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Pauză' }).click();
   await expect(page.getByRole('button', { name: 'Începe Citirea' })).toBeVisible();
@@ -530,7 +529,7 @@ test('demo: the intro shows a parent reading aloud next to a screen, in both lan
   await expect(page.getByText('4. Povestea continuă')).toBeVisible();
 
   await page.getByRole('switch').click();
-  await expect(page.getByText('Image model: gemini-3.1-flash-lite-image')).toBeVisible();
+  await expect(page.getByText('gemini-3.1-flash-lite-image')).toHaveCount(0);
   await expect(page.getByRole('img', { name: /dad reads aloud/ })).toBeVisible();
   await expect(page.getByText('Read a book aloud, next to a screen.')).toBeVisible();
   await expect(page.getByText('1. Setup')).toBeVisible();

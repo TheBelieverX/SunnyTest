@@ -2,7 +2,6 @@ import React, { useEffect, useState, useRef } from 'react';
 import { Illustration } from '../types';
 import { Sparkles, Mic, Maximize2, Minimize2 } from 'lucide-react';
 import { DemoPlayer } from './DemoPlayer';
-import { IMAGE_MODEL } from '../imageModel';
 
 interface Props {
   currentIllustration: Illustration | null;
@@ -137,10 +136,6 @@ export const BookViewer: React.FC<Props> = ({ currentIllustration, isGenerating,
           </div>
         </div>
       )}
-
-      <div className="absolute bottom-2 left-2 z-30 max-w-[calc(100%-1rem)] rounded bg-black/60 px-2 py-1 text-[10px] leading-tight text-white backdrop-blur-sm">
-        {language === 'ro-RO' ? 'Model imagini' : 'Image model'}: {IMAGE_MODEL}
-      </div>
 
       {/* Fullscreen Toggle Button - Always Visible now */}
       <button
